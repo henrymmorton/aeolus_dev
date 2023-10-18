@@ -1,8 +1,6 @@
-  import numpy as np
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
-import math
-import stateestimation as sttest
 
 #Description: The pure pursuit algorithm
 
@@ -178,7 +176,7 @@ class Pursuit:
 
         self.steering_angle = steering_angle
 
-def pipeline(state):
+def pure_pursuit_pipeline(state):
 
     ppframe = Pursuit(state)
     

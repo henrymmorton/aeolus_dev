@@ -1,8 +1,7 @@
-
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import lanefilter as filter
+from .lanefilter import binary_thresh, threshold, gaussian_blur, median_blur, sobel, canny
 
 #Description: The Lane class and its functions which construct a lane object from an image
 
@@ -36,7 +35,8 @@ class Lane:
         
         #Holds an array of tuples representing xy coordinates of the four corners of the region of interest
         if roi_corners is None:
-            roi_corners = [(300,170), (0, 330), (self.width,330), (self.width-240 ,170)]
+            # roi_corners = [(300,170), (0, 330), (self.width,330), (self.width-240 ,170)]
+            roi_corners = [(1600, 1200), (0, self.height), (self.width, self.height), (self.width - 1600 , 1200)]
 
         self.roi_corners = np.float32(roi_corners)
 
@@ -86,7 +86,7 @@ class Lane:
         self.cv_state = None
 
         #Conversions from pixels to meters in x and y dimensions 
-        self.y_m2p = 10.0 / 1000 #meters per pixel in x direction
+        self.y_m2p = 10.0 / 10000 #meters per pixel in x direction
 
 
     def get_filtered(self, img=None, thresholds=None, median=False, canny=False, plot=False):
@@ -101,42 +101,51 @@ class Lane:
         
         if thresholds == None:
             #A tuple of tuples of thresholds for each of the thresholding operations
-            thresholds = ((180, 255), (110, 255), (60,255), (180,255))
+            thresholds = ((180, 255), (110, 255), (60, 255), (180, 255))
         
         #Converts the image from the BGR color space to the HLS color space
         hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
 
+        #----------Isolates the interior (fill) of lane lines----------#
+        #Apply a binary (0,255) threshold to the saturation channel of the image
+        _, s_thresholded = threshold(hls[:,:,2], thresholds[2])
+
+        #Apply a binary (0,255) threshold to the red channel of the image
+        #_, r_thresholded = threshold(img[:,:,2], thresholds[3])
+
+        #Apply a binary (0,255) threshold to the blue channel of the image
+        _, b_thresholded = threshold(img[:,:,0], thresholds[3])
+        
+        #Apply an and to combine the saturation and blue thresholded image to filter for pixels that are blue and have high saturation
+        rs_thresholded = cv2.bitwise_and(s_thresholded, b_thresholded)
+
         #------------Isolates the edges of lane lines-----------#
+
         #Apply a binary (0,255) threshold to the lightness channel of the image
-        _, l_thresholded = filter.threshold(hls[:,:,1], thresh=thresholds[0])
+        _, l_thresholded = threshold(hls[:,:,1], thresh=thresholds[0])
+
+        #Apply an and to combine the saturation and blue thresholded image to filter for pixels that are blue and have high saturation
         
         if median == True:
             #Apply a median blur to the thresholded image to reduce noise
-            l_blurred = filter.median_blur(l_thresholded, median_kernel=5)
+            l_blurred = median_blur(l_thresholded, median_kernel = 19)
         else:
             #Apply a gaussian blur to the thresholded image to reduce noise 
-            l_blurred = filter.gaussian_blur(l_thresholded, gauss_kernel=3)
+            l_blurred = gaussian_blur(l_thresholded, gauss_kernel = 9)
 
         if canny == True:
             #Apply Canny edge detection to the blurred image
-            edge_detected = filter.canny(l_blurred, (170, 200), aperture_size=3)
+            edge_detected = canny(l_blurred, (170, 200), aperture_size = 3)
         else:
             #Apply Sobel edge detection to the blurred image and make the image binary (0,1)
-            edge_detected = filter.sobel(l_blurred, sobel_kernel=3, thresh=thresholds[1])
+            edge_detected = sobel(l_blurred, sobel_kernel = 3, thresh=thresholds[1])
 
-        #----------Isolates the interior (fill) of lane lines----------#
-        #Apply a binary (0,255) threshold to the saturation channel of the image
-        _, s_thresholded = filter.threshold(hls[:,:,2], thresholds[2])
-
-        #Apply a binary (0,255) threshold to the red channel of the image
-        _, r_thresholded = filter.threshold(img[:,:,2], thresholds[3])
-        
-        #Apply an and to combine the saturation and red thresholded image to filter for pixels that are red and have high saturation
-        rsthresholded = cv2.bitwise_and(s_thresholded, r_thresholded)
+        edge_detected_uint = edge_detected.astype(np.uint8) * 255
 
         #----------Combine the edges and interior of lane lines----------#
-        #Apply a or to combine the lane line egdes and interiors
-        self.filtered_lanes = cv2.bitwise_or(rsthresholded, edge_detected.astype(np.uint8))
+        #Apply an or to combine the lane line egdes and interiors
+        # self.filtered_lanes = cv2.bitwise_or(rs_thresholded, edge_detected_uint)
+        self.filtered_lanes = rs_thresholded
 
         if plot == True:
             #Plot the figures
@@ -144,16 +153,16 @@ class Lane:
             figure.set_size_inches(10, 10)
             figure.tight_layout(pad=3.0)
             axis1.imshow(cv2.cvtColor(self.original, cv2.COLOR_BGR2RGB))
-            axis2.imshow(l_thresholded, cmap='gray')
-            axis3.imshow(edge_detected, cmap='gray')
+            axis2.imshow(l_blurred, cmap='gray')
+            axis3.imshow(edge_detected_uint, cmap='gray')
             axis4.imshow(s_thresholded, cmap='gray')
-            axis5.imshow(r_thresholded, cmap='gray')
+            axis5.imshow(b_thresholded, cmap='gray')
             axis6.imshow(self.filtered_lanes, cmap='gray')
             axis1.set_title("Original")  
             axis2.set_title("Luminosity Thresholded")
             axis3.set_title("Edge Detected")
             axis4.set_title("Saturation Thresholded")
-            axis5.set_title("Red Thresholded")
+            axis5.set_title("Blue Thresholded")
             axis6.set_title("Fully Filtered")
             plt.show()
 
@@ -185,13 +194,17 @@ class Lane:
         
         #Display the perspective warped image
         if plot == True:
+            figure, (axis1, axis2) = plt.subplots(2,1)
+            filtered_display = self.filtered_lanes.copy()
+            filtered_display = cv2.polylines(filtered_display, np.int32([self.roi_corners]), True, (255,255,255), 5)
             roi_display = self.pwarped.copy()
-            roi_display = cv2.polylines(roi_display, np.int32([self.target_roi_corners]), True, (150,150,150), 3)
-            figure, (axis1) = plt.subplots(1,1)
+            roi_display = cv2.polylines(roi_display, np.int32([self.target_roi_corners]), True, (255,255,255), 5)
             figure.set_size_inches(10, 6)
             figure.tight_layout(pad=3.0)
-            axis1.imshow(roi_display, cmap='gray')
-            axis1.set_title("Perspective Transform")
+            axis1.imshow(filtered_display, cmap='gray')
+            axis1.set_title("Original Perspective")
+            axis2.imshow(roi_display, cmap='gray')
+            axis2.set_title("Transformed Perspective")
             plt.show()
 
         return pwarped
@@ -364,7 +377,7 @@ class Lane:
             self.rfit = rfit
         else:
             self.r_dtct = False
-            print("No left lane detected")
+            print("No right lane detected")
 
         if (plot and self.l_dtct and self.r_dtct) == True:
 
@@ -389,7 +402,7 @@ class Lane:
             axis3.plot(lfit_x, self.ploty, color='yellow')
             axis3.plot(rfit_x, self.ploty, color='yellow')
             axis1.set_title("Original Image")
-            axis2.set_title("Warped Fram with Sliding Windows")
+            axis2.set_title("Warped Frame with Sliding Windows")
             axis3.set_title("Detected Lane Lines with Identified Lane Pixels")
             plt.show()
 
@@ -419,12 +432,12 @@ class Lane:
 
         #----------Extract the indices (number in the "nonzero" list) of the nonzero pixels that fall within the polynomial window----------#
 
-        if self.l_dtc == True:
+        if self.l_dtct == True:
             #Calculate the polynomial x value value for each nonzero pixel's y value
             lpolyx = lfit[0]*nonzeroy**2 + lfit[1]*nonzeroy + lfit[2]
 
             #TODO: Test to see if equivilant to polyx
-            _, lpolyx2 = self.gen_poly_points(nonzeroy, lfit)
+            #_, lpolyx2 = self.gen_poly_points(nonzeroy, lfit)
         
             #Extract the indices that fall within the polynomial window
             left_lane_pix = (nonzerox > lpolyx - margin) & (nonzerox < lpolyx + margin)
@@ -444,7 +457,7 @@ class Lane:
         if self.r_dtct == True:
             #Repeat for right lane
             rpolyx = rfit[0]*nonzeroy**2 + rfit[1]*nonzeroy + rfit[2]
-            _, rpolyx2 = self.gen_poly_points(nonzeroy, rfit)
+            #_, rpolyx2 = self.gen_poly_points(nonzeroy, rfit)
             right_lane_pix = (nonzerox > rpolyx - margin) & (nonzerox < rpolyx + margin)
             self.rlane_inds = right_lane_pix
             rightx = nonzerox[right_lane_pix]
@@ -574,23 +587,25 @@ class Lane:
         
         self.path_fit = path_fit
 
+        #Warp the original color image
+        color_pwarped = self.perspective_transform(img=self.original)
+        self.color_pwarped = color_pwarped
+
         if plot == True:
             #Generate the path line
             ploty, path_fit_x = self.gen_poly_points(self.pwarped.shape[0], path_fit)
             self.path_fit = path_fit
             self.path_fit_x = path_fit_x
 
-            #Warp the original color image
-            color_pwarped = self.perspective_transform(img=self.original)
-            self.color_pwarped = color_pwarped
             #Plot the lines
             figure, (axis1) = plt.subplots(1,1) # 3 rows, 1 column
             figure.set_size_inches(10, 10)
+            figure.tight_layout(pad=3.0)
             axis1.imshow(cv2.cvtColor(color_pwarped, cv2.COLOR_BGR2RGB))
             axis1.plot(self.lfit_x, self.ploty, color='yellow')
             axis1.plot(self.rfit_x, self.ploty, color='yellow')
             axis1.plot(path_fit_x, ploty, color='red')
-            axis1.set_title("Original Image")
+            axis1.set_title("Lane Lines and Center Path")
             plt.show()
         
         return path_fit
@@ -610,66 +625,68 @@ class Lane:
         self.cv_state = cv_state
         
 
-def pipeline(img):
+def lane_detection_pipeline(img, plotIt = False, myThresholds = None, myROI = None):
 
         #Create a instance of Lane
-        lane = Lane(original=img)
+        lane = Lane(original = img, roi_corners = myROI)
 
         #Filter image to isolate lane line data
-        lane.get_filtered(plot=False)
+        lane.get_filtered(plot = plotIt, thresholds = myThresholds, median=True)
         
         #Perform perspective transform
-        lane.perspective_transform(set=True, plot=False)
+        lane.perspective_transform(set=True, plot = plotIt)
 
         #Generate a histogram to to locate starting points for sliding windows
-        lane.generate_histogram(plot=False)
+        lane.generate_histogram(plot = plotIt)
 
         #Get initial polynomials using the sliding windows method
-        lfit, rfit = lane.find_laneline_polys(plot=False)
+        lfit, rfit = lane.find_laneline_polys(plot = plotIt)
 
         #Refine polynomials using the polynomial window method
-        lfit, rfit = lane.refine_lane_polys(plot=False)
+        lfit, rfit = lane.refine_lane_polys(plot = plotIt)
 
         #Gets the available path
-        path_fit = lane.get_path(plot=False)
+        path_fit = lane.get_path(plot = plotIt)
 
         #Generates the cv state information
         cv_state = lane.gen_cv_state()
 
-        return cv_state
+        return lane
 
         
 
 def main():
 
-    #Load the image
-    test_image = cv2.imread('testimage.jpeg')
+    # #Load the image
+    # test_image = cv2.imread('testimage3.jpeg')
 
-    #Create a instance of Lane
-    lane = Lane(original=test_image)
+    # #Create a instance of Lane
+    # lane = Lane(original=test_image)
 
-    #Filter image to isolate lane line data
-    filtered_lanes = lane.get_filtered(plot=True)
+    # #Filter image to isolate lane line data
+    # filtered_lanes = lane.get_filtered(plot=True)
     
-    #Perform perspective transform
-    pwarped = lane.perspective_transform(set=True, plot=True)
+    # #Perform perspective transform
+    # pwarped = lane.perspective_transform(set=True, plot=True)
 
-    #Generate a histogram to to locate starting points for sliding windows
-    histogram = lane.generate_histogram(plot=True)
+    # #Generate a histogram to to locate starting points for sliding windows
+    # histogram = lane.generate_histogram(plot=True)
 
-    #Get initial polynomials using the sliding windows method
-    lfit, rfit = lane.find_laneline_polys(plot=True)
+    # #Get initial polynomials using the sliding windows method
+    # lfit, rfit = lane.find_laneline_polys(plot=True)
 
-    #Refine polynomials using the polynomial window method
-    lfit, rfit = lane.refine_lane_polys(lfit, rfit, plot=True)
+    # #Refine polynomials using the polynomial window method
+    # lfit, rfit = lane.refine_lane_polys(lfit, rfit, plot=True)
 
-    #Show the lane zone
-    lane.plot_lane_zone(plot=True)
+    # #Show the lane zone
+    # lane.plot_lane_zone(plot=True)
 
-    #Get the center of lane path
-    path_fit = lane.get_path(lfit, rfit, plot=True)
+    # #Get the center of lane path
+    # path_fit = lane.get_path(lfit, rfit, plot=True)
 
-    return path_fit
+    # return path_fit
+
+    return
 
 
 main()

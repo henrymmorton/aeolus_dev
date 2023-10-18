@@ -3,6 +3,7 @@ import numpy as np
 
 #Description: The functions used to filter an image to prepare it for lane detection
 
+
 def binary_thresh(array, thresh):
     """
     Make every element in threshold 1 and every element out of the threshold 0

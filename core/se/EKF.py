@@ -15,7 +15,7 @@ class BicycleEKF:
         self.meas_covar = meas_covar
 
         # Useful constants
-        self.N = control_covar.shape()[0]
+        self.N = control_covar.shape[0]
 
         
     def propogate_state(self, prev_state, u, dt):

@@ -4,9 +4,9 @@ from queue import LifoQueue
 import numpy as np
 import matplotlib.pyplot as plt
 
-import vehicle as vcl
-import lanedetection as ld
-import EKF
+from ..vhcl.vehicle import Vehicle
+from ..cv.pipeline_dev.lanedetection import Lane
+from .EKF import BicycleEKF
 
 #Decription: The vehicle state class and the methods required to get each state element. Uses the latest image from the lane detection pipeline and the latest sensor data.
 
@@ -56,17 +56,17 @@ class VehicleState:
         #--------------Filter Objects--------------#
         self.control_covar = control_covar
         self.measurement_covar = measurement_covar
-        self.EKF = EKF.BicycleEKF(control_covar, measurement_covar, vehicle)
+        self.EKF = BicycleEKF(control_covar, measurement_covar, vehicle)
 
         #----------Image Local State Vars----------#
         #The x and y position and heading in the image local frame
-        self.lcl_x
-        self.lcl_y
-        self.lcl_heading
+        self.lcl_x = None
+        self.lcl_y = None
+        self.lcl_heading = None
 
         # A stack of all the inputs since the last image was processed
         # format np.array([timestamp, dt, v, delta, glb_heading])
-        self.inputs_stack
+        self.inputs_stack =  LifoQueue()
         
         #----------Track Global State Vars----------#
         #The x and y position and heading in the global coordinate frame
@@ -126,6 +126,8 @@ class VehicleState:
 
         return: The velocity (as a scalar)
         """
+
+        return 2
 
     def get_accel(self):
         """
@@ -217,7 +219,7 @@ class VehicleState:
         virtual_img[0:img_dim[0], 0:img_dim[1], :] = img
 
         #Extend the path fit into the virtual space
-        pic_pixy, pic_pixx = ld.Lane.gen_poly_points(new_length, fit)
+        pic_pixy, pic_pixx = Lane.gen_poly_points(new_length, fit)
         self.pic_pixy = pic_pixy
         self.pic_pixx = pic_pixx
 
@@ -321,7 +323,7 @@ class VehicleState:
         return: The displacement from the path to the vehicle reference point
         """
 
-    def updateState(self, gps_x, gps_y, dt, new_frame = None, nf_timestamp = None, new_gps = None):
+    def updateState(self, dt, new_frame = None, nf_timestamp = None, new_gps = None, gps_x = None, gps_y = None):
         """
         Update all the state variables
 
@@ -329,11 +331,10 @@ class VehicleState:
         """
 
         # Get all the measured variables and set their values in state
-        c_dist = self.get_distance(self)
-        c_vel = self.get_velocity(self)
-        c_accel = self.get_accel(self)
-        c_heading = self.get_global_heading(self)
-
+        c_dist = self.get_distance()
+        c_vel = self.get_velocity()
+        c_accel = self.get_accel()
+        c_heading = self.get_global_heading()
 
         self.dist = c_dist
         self.velocity = c_vel
@@ -362,11 +363,21 @@ class VehicleState:
             self.EKF.EKF_state_update(p_state, self.EKF_covar, control_input, measurement, dt)
 
             
+def state_est_pipeline(vehicle, pwarped, fit):
 
+    CONTROL_COVAR = np.array([[1, 0],
+                              [0, 1]])
+    
+    MEASUREMENT_COVAR = np.array(
+                   [[1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1]])
+    
 
-def pipeline(pwarped, fit):
+    state = VehicleState(vehicle, CONTROL_COVAR, MEASUREMENT_COVAR, pwarped, fit)
 
-    state = VehicleState(pwarped, fit)
+    state.updateState(dt = 0.1)
 
     pic_pixy, pic_pixx = state.gen_virt_space(plot=True)
 
