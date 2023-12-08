@@ -1,0 +1,7 @@
+On MacOS
+
+python main.py --savedir erfnet_trial --datadir /Users/henrymorton/Desktop/aeolus/core/cv/nueral_net/ts_data/train_set --num-epochs 150 --batch-size 6
+
+Somewhere Else
+
+python main.py --savedir erfnet_trial --datadir /Users/henrymorton/Desktop/aeolus/core/cv/nueral_net/ts_data/train_set --num-epochs 150 --batch-size 6 --no-cuda
