@@ -21,10 +21,9 @@ from torchvision.transforms import ToTensor, ToPILImage
 
 from dataset import TuSimple
 from transform import Relabel, ToLabel, Colorize
-from visualize import Dashboard
 
 import importlib
-from iouEval import iouEval, getColorEntry
+#from iouEval import iouEval, getColorEntry
 
 from shutil import copyfile
 
@@ -83,14 +82,15 @@ class CrossEntropyLoss2d(torch.nn.Module):
 
     def __init__(self, weight=None):
         super().__init__()
-
+        self.sigmoid = torch.nn.Sigmoid()
         self.loss = torch.nn.BCELoss(weight) # TODO: Possibly change this to cross entropy loss function https://neptune.ai/blog/pytorch-loss-functions
 
     def forward(self, outputs, targets):
-        return self.loss(torch.nn.functional.log_softmax(outputs, dim=1), targets)
+        return self.loss(self.sigmoid(outputs), targets)
 
 
 def train(args, model, enc=False):
+
     best_acc = 0
 
     #TODO: calculate weights by processing dataset histogram (now its being set by hand from the torch values)
@@ -98,7 +98,8 @@ def train(args, model, enc=False):
 
     # These weights determine the "importance" of each type (road, bike, etc). These are an input to the loss function. Loss penaltizes mistakes on classes with a higher weight more
     
-    assert os.path.exists(args.datadir), "Error: datadir (dataset directory) could not be loaded"
+    print(args.datadir)
+    #assert os.path.exists(args.datadir), "Error: datadir (dataset directory) could not be loaded"
 
     # This transform augments the dataset with random flips and shifts
     co_transform = MyCoTransform(enc, augment=True, height=args.height)#1024)
@@ -115,11 +116,14 @@ def train(args, model, enc=False):
     if args.cuda:
         weight = weight.cuda()
     """
+    if args.mps:
+        if torch.backends.mps.is_available():
+            mps_device = torch.device("mps")
+
     criterion = CrossEntropyLoss2d()
-    print(type(criterion))
 
     # Specfiy where to save logs
-    savedir = f'../save/{args.savedir}'
+    savedir = args.savedir
 
     if (enc):
         automated_log_path = savedir + "/automated_log_encoder.txt"
@@ -148,16 +152,32 @@ def train(args, model, enc=False):
         #Must load weights, optimizer, epoch and best value. 
         if enc:
             filenameCheckpoint = savedir + '/checkpoint_enc.pth.tar'
+            assert os.path.exists(filenameCheckpoint), "Error: resume option was used but checkpoint was not found in folder"
+            checkpoint = torch.load(filenameCheckpoint)
+            start_epoch = checkpoint['epoch']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            best_acc = checkpoint['best_acc']
+            print("=> Loaded checkpoint at epoch {})".format(checkpoint['epoch']))
         else:
             filenameCheckpoint = savedir + '/checkpoint.pth.tar'
-
-        assert os.path.exists(filenameCheckpoint), "Error: resume option was used but checkpoint was not found in folder"
-        checkpoint = torch.load(filenameCheckpoint)
-        start_epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        best_acc = checkpoint['best_acc']
-        print("=> Loaded checkpoint at epoch {})".format(checkpoint['epoch']))
+            if os.path.exists(filenameCheckpoint):
+                checkpoint = torch.load(filenameCheckpoint)
+                start_epoch = checkpoint['epoch']
+                model.load_state_dict(checkpoint['state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                best_acc = checkpoint['best_acc']
+                print("=> Loaded checkpoint at epoch {})".format(checkpoint['epoch']))
+            else:
+                filenameCheckpoint = savedir + '/checkpoint_enc.pth.tar'
+                if os.path.exists(filenameCheckpoint):
+                    model_dict = torch.load(filenameCheckpoint)
+                    state_dict = model_dict['state_dict']
+                    model.load_state_dict(state_dict)
+                    print("Loaded encoder from saved state dict, starting training decoder")
+                else:
+                    assert os.path.exists(filenameCheckpoint), "Error: Decoder resume option was used but neither encoder nor decoder checkpoint was not found in folder"
+                
 
     
     # This scales the learning rate at each epoch during training according to the number of epochs
@@ -165,24 +185,23 @@ def train(args, model, enc=False):
     lambda1 = lambda epoch: pow((1-((epoch-1)/args.num_epochs)),0.9)  ## scheduler 2
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda1)                             ## scheduler 2
 
-    if args.visualize and args.steps_plot > 0:
-        board = Dashboard(args.port)
 
     # This loop is where the actual training happens. Iterates through each training epoch
     for epoch in range(start_epoch, args.num_epochs+1):
         print("----- TRAINING - EPOCH", epoch, "-----")
 
         # Updates the learning rate for this epoch based on the scheduler function
-        scheduler.step()    ## scheduler 2 
+        # scheduler.step()    ## scheduler 2 
 
         epoch_loss = []
         time_train = []
      
         doIouTrain = args.iouTrain   
         doIouVal =  args.iouVal      
-
+        """
         if (doIouTrain):
             iouEvalTrain = iouEval(NUM_CLASSES)
+        """
 
         usedLr = 0
         for param_group in optimizer.param_groups:
@@ -199,19 +218,23 @@ def train(args, model, enc=False):
             #print (labels.size())
             #print (np.unique(labels.numpy()))
             #print("labels: ", np.unique(labels[0].numpy()))
-            #labels = torch.ones(4, 1, 512, 1024).long() # TODO: Chqnge this to the correct image size
+            #labels = torch.ones(4, 1, 512, 1024).long() # TODO: Change this to the correct image size
             if args.cuda:
                 images = images.cuda()
                 labels = labels.cuda()
+            if args.mps:
+                images = images.to(mps_device)
+                labels = labels.to(mps_device)
 
-            inputs = Variable(images)
-            targets = Variable(labels)
+            inputs = images
+            targets = labels
 
             # This step computes all the outputs of the model (segmented images) for each batch
             outputs = model(inputs, only_encode=enc)
 
             #print("targets", np.unique(targets[:, 0].cpu().data.numpy()))
 
+            # Zeros out the gradients so that parameters can update correctly based on newly computed gradients
             optimizer.zero_grad()
 
             # Calculates the current loss values and all the partial gradients of the loss function with respect to model parameters
@@ -225,14 +248,13 @@ def train(args, model, enc=False):
             epoch_loss.append(loss.data.item())
             # Get the total time it took to train this batch
             time_train.append(time.time() - start_time)
-
-            print("train time for batch", step, "in epoch", epoch, " : ", time.time() - start_time)
-
-
+            """
             if (doIouTrain):
                 #start_time_iou = time.time()
                 iouEvalTrain.addBatch(outputs.max(1)[1].unsqueeze(1).data, targets.data)
-                #print ("Time to add confusion matrix: ", time.time() - start_time_iou)      
+                #print ("Time to add confusion matrix: ", time.time() - start_time_iou)    
+            
+            """
 
             #print(outputs.size())
             if args.visualize and args.steps_plot > 0 and step % args.steps_plot == 0:
@@ -261,10 +283,13 @@ def train(args, model, enc=False):
         average_epoch_loss_train = sum(epoch_loss) / len(epoch_loss)
         
         iouTrain = 0
+        """
         if (doIouTrain):
             iouTrain, iou_classes = iouEvalTrain.getIoU()
             iouStr = getColorEntry(iouTrain)+'{:0.2f}'.format(iouTrain*100) + '\033[0m'
-            print ("EPOCH IoU on TRAIN set: ", iouStr, "%")  
+            print ("EPOCH IoU on TRAIN set: ", iouStr, "%") 
+        
+        """
 
         #Validate on 500 val images after each epoch of training
         print("----- VALIDATING - EPOCH", epoch, "-----")
@@ -275,56 +300,60 @@ def train(args, model, enc=False):
         if (doIouVal):
             iouEvalVal = iouEval(NUM_CLASSES)
 
-        # Loop through each batch of the validation dataset and calculate loss
-        for step, (images, labels) in enumerate(loader_val):
-            start_time = time.time()
-            if args.cuda:
-                images = images.cuda()
-                labels = labels.cuda()
+        with torch.no_grad(): 
+            # Loop through each batch of the validation dataset and calculate loss
+            for step, (images, labels) in enumerate(loader_val):
+                start_time = time.time()
+                if args.cuda:
+                    images = images.cuda()
+                    labels = labels.cuda()
+                if args.mps:
+                    images = images.to(mps_device)
+                    labels = labels.to(mps_device)
 
-            inputs = Variable(images, volatile=True)    #volatile flag makes it free backward or outputs for eval
-            targets = Variable(labels, volatile=True)
-            outputs = model(inputs, only_encode=enc) 
+                inputs = images
+                targets = labels
+                outputs = model(inputs, only_encode=enc)
 
-            loss = criterion(outputs, targets)
-            epoch_loss_val.append(loss.data[0])
-            time_val.append(time.time() - start_time)
+                loss = criterion(outputs, targets)
+                epoch_loss_val.append(loss.data.item())
+                time_val.append(time.time() - start_time)
 
+                #Add batch to calculate TP, FP and FN for iou estimation
+                if (doIouVal):
+                    #start_time_iou = time.time()
+                    iouEvalVal.addBatch(outputs.max(1)[1].unsqueeze(1).data, targets.data)
+                    #print ("Time to add confusion matrix: ", time.time() - start_time_iou)
 
-            #Add batch to calculate TP, FP and FN for iou estimation
-            if (doIouVal):
-                #start_time_iou = time.time()
-                iouEvalVal.addBatch(outputs.max(1)[1].unsqueeze(1).data, targets.data)
-                #print ("Time to add confusion matrix: ", time.time() - start_time_iou)
-
-            if args.visualize and args.steps_plot > 0 and step % args.steps_plot == 0:
-                start_time_plot = time.time()
-                image = inputs[0].cpu().data
-                board.image(image, f'VAL input (epoch: {epoch}, step: {step})')
-                if isinstance(outputs, list):   #merge gpu tensors
-                    board.image(color_transform(outputs[0][0].cpu().max(0)[1].data.unsqueeze(0)),
-                    f'VAL output (epoch: {epoch}, step: {step})')
-                else:
-                    board.image(color_transform(outputs[0].cpu().max(0)[1].data.unsqueeze(0)),
-                    f'VAL output (epoch: {epoch}, step: {step})')
-                board.image(color_transform(targets[0].cpu().data),
-                    f'VAL target (epoch: {epoch}, step: {step})')
-                print ("Time to paint images: ", time.time() - start_time_plot)
-            if args.steps_loss > 0 and step % args.steps_loss == 0:
-                average = sum(epoch_loss_val) / len(epoch_loss_val)
-                print(f'VAL loss: {average:0.4} (epoch: {epoch}, step: {step})', 
-                        "// Avg time/img: %.4f s" % (sum(time_val) / len(time_val) / args.batch_size))
+                if args.visualize and args.steps_plot > 0 and step % args.steps_plot == 0:
+                    start_time_plot = time.time()
+                    image = inputs[0].cpu().data
+                    board.image(image, f'VAL input (epoch: {epoch}, step: {step})')
+                    if isinstance(outputs, list):   #merge gpu tensors
+                        board.image(color_transform(outputs[0][0].cpu().max(0)[1].data.unsqueeze(0)),
+                        f'VAL output (epoch: {epoch}, step: {step})')
+                    else:
+                        board.image(color_transform(outputs[0].cpu().max(0)[1].data.unsqueeze(0)),
+                        f'VAL output (epoch: {epoch}, step: {step})')
+                    board.image(color_transform(targets[0].cpu().data),
+                        f'VAL target (epoch: {epoch}, step: {step})')
+                    print ("Time to paint images: ", time.time() - start_time_plot)
+                if args.steps_loss > 0 and step % args.steps_loss == 0:
+                    average = sum(epoch_loss_val) / len(epoch_loss_val)
+                    print(f'VAL loss: {average:0.4} (epoch: {epoch}, step: {step})', 
+                            "// Avg time/img: %.4f s" % (sum(time_val) / len(time_val) / args.batch_size))
                        
-
         average_epoch_loss_val = sum(epoch_loss_val) / len(epoch_loss_val)
+
         #scheduler.step(average_epoch_loss_val, epoch)  ## scheduler 1   # update lr if needed
+        # Update the scheduler based on the current epoch
+        scheduler.step()    ## scheduler 2 
 
         iouVal = 0
         if (doIouVal):
             iouVal, iou_classes = iouEvalVal.getIoU()
             iouStr = getColorEntry(iouVal)+'{:0.2f}'.format(iouVal*100) + '\033[0m'
             print ("EPOCH IoU on VAL set: ", iouStr, "%") 
-           
 
         # remember best valIoU and save checkpoint
         if iouVal == 0:
@@ -380,24 +409,29 @@ def save_checkpoint(state, is_best, filenameCheckpoint, filenameBest):
         print ("Saving model as best")
         torch.save(state, filenameBest)
 
-
 def main(args):
-    savedir = f'../save/{args.savedir}'
+    savedir = args.savedir
+    
+    kaggle_module_path = '/kaggle/usr/lib/erfnet/'
 
+    print(savedir)
     if not os.path.exists(savedir):
         os.makedirs(savedir)
-
+        
     with open(savedir + '/opts.txt', "w") as myfile:
         myfile.write(str(args))
 
     #Load Model
-    assert os.path.exists(args.model + ".py"), "Error: model definition not found"
+    assert os.path.exists(kaggle_module_path + args.model + ".py"), "Error: model definition not found"
     model_file = importlib.import_module(args.model)
     model = model_file.ERFNet(NUM_CLASSES)
-    copyfile(args.model + ".py", savedir + '/' + args.model + ".py")
+    copyfile(kaggle_module_path + args.model + ".py", savedir + '/' + args.model + ".py")
     
     if args.cuda:
         model = torch.nn.DataParallel(model).cuda()
+    if args.mps:
+        mps_device = torch.device("mps")
+        model.to(mps_device)
     
     if args.state:
         #if args.state is provided then load this state for training
@@ -467,22 +501,27 @@ def main(args):
                 pretrainedEnc = pretrainedEnc.cpu()     #because loaded encoder is probably saved in cuda
         else:
         """
+        
         pretrainedEnc = next(model.children()).encoder
         model = model_file.ERFNet(NUM_CLASSES, encoder=pretrainedEnc)  #Add decoder to encoder
         if args.cuda:
             model = torch.nn.DataParallel(model).cuda()
+        if args.mps:
+            mps_device = torch.device("mps")
+            model.to(mps_device)
         #When loading encoder reinitialize weights for decoder because they are set to 0 when training dec
     model = train(args, model, False)   #Train decoder
     print("========== TRAINING FINISHED ===========")
 
+
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--cuda', action='store_true', default=False)  #NOTE: cpu-only has not been tested so you might have to change code if you deactivate this flag
-    parser.add_argument('--model', default="ERFNet")
+    parser.add_argument('--cuda', action='store_true', default=True)  #NOTE: cpu-only has not been tested so you might have to change code if you deactivate this flag
+    parser.add_argument('--mps', action='store_true', default=False)
+    parser.add_argument('--model', default="erfnet")
     parser.add_argument('--state')
-
     parser.add_argument('--port', type=int, default=8097)
-    parser.add_argument('--datadir', default=os.getenv("HOME") + "/datasets/cityscapes/")
+    parser.add_argument('--datadir', default='/kaggle/input/tusimple/train_set')
     parser.add_argument('--height', type=int, default=720)
     parser.add_argument('--num-epochs', type=int, default=150)
     parser.add_argument('--num-workers', type=int, default=4)
@@ -490,13 +529,12 @@ if __name__ == '__main__':
     parser.add_argument('--steps-loss', type=int, default=50)
     parser.add_argument('--steps-plot', type=int, default=50)
     parser.add_argument('--epochs-save', type=int, default=0)    #You can use this value to save model every X epochs
-    parser.add_argument('--savedir', required=True)
-    parser.add_argument('--decoder', action='store_true')
+    parser.add_argument('--savedir', default = '/kaggle/working/ernet_trial')
+    parser.add_argument('--decoder', action='store_true', default = True)
     parser.add_argument('--pretrainedEncoder') #, default="../trained_models/erfnet_encoder_pretrained.pth.tar")
     parser.add_argument('--visualize', action='store_true')
-
     parser.add_argument('--iouTrain', action='store_true', default=False) #recommended: False (takes more time to train otherwise)
-    parser.add_argument('--iouVal', action='store_true', default=True)  
-    parser.add_argument('--resume', action='store_true')    #Use this flag to load last checkpoint for training  
-
-    main(parser.parse_args())
+    parser.add_argument('--iouVal', action='store_true', default=False)  
+    parser.add_argument('--resume', action='store_true', default = True)    #Use this flag to load last checkpoint for training  
+    args = parser.parse_args(args=[])
+    main(args)

@@ -64,13 +64,14 @@ class TuSimple(Dataset):
         label_path = os.path.join(self.root, label_leaf)
         label = load_image(label_path)
 
-        # print("original image dimensions are: ", image.size)
+        print("original image dimensions are: ", image.size)
         # print("original label dimensions are: ", label.size)
 
         if self.co_transform is not None:
             image, label = self.co_transform(image, label)
 
-        # print("altered image_dimensions are: ", image.shape)
+
+        print("altered image_dimensions are: ", image.shape)
         # print("altered label_dimensions are: ", label.shape)
 
         return image, label
