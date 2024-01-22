@@ -12,7 +12,7 @@ TEST_SET = ['test_label.json']
 def gen_label_for_json(args, image_set, instance_level_label):
 
     H, W = 720, 1280
-    SEG_WIDTH = 30
+    SEG_WIDTH = 15
     save_dir = args.savedir
 
     os.makedirs(os.path.join(args.root, args.savedir, "list"), exist_ok=True)
@@ -64,12 +64,15 @@ def gen_label_for_json(args, image_set, instance_level_label):
                 if len(coords) < 4:
                     list_str.append('0')
                     continue
+                line_width = SEG_WIDTH * (1/4)
+                width_increment = (SEG_WIDTH * 3/4) / len(coords)
                 for j in range(len(coords)-1):
+                    line_width = line_width + width_increment
                     if (instance_level_label):
                         # Labels the lines with a "color" based on which lane they belong to (1-5)
-                        cv2.line(seg_img, coords[j], coords[j+1], (i+1, i+1, i+1), SEG_WIDTH//2)
+                        cv2.line(seg_img, coords[j], coords[j+1], (i+1, i+1, i+1), round(line_width))
                     else:
-                        cv2.line(seg_img, coords[j], coords[j+1], (1), SEG_WIDTH//2)
+                        cv2.line(seg_img, coords[j], coords[j+1], (1), round(line_width))
 
                 list_str.append('1')
 
@@ -116,7 +119,7 @@ def generate_label(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True, help='The root of the Tusimple dataset')
-    parser.add_argument('--savedir', type=str, default='seg_label', help='The root of the Tusimple dataset')
+    parser.add_argument('--savedir', type=str, default='seg_label', help='Where to save the data')
     parser.add_argument('--instance_level', type=str, help='Whether the labels note which lane a pixel belongs to or just whether or not a pixel belongs to a lane')
     args = parser.parse_args()
 

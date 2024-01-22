@@ -5,7 +5,6 @@ import argparse
 def vis_seg_label(img_path):
     label_img = cv2.imread(img_path)
     image_dims = label_img.shape
-    breakpoint()
     for row in range(image_dims[0]):
         for column in range(image_dims[1]):
             if label_img[row, column, 0] == 1:
